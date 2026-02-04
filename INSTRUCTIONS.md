@@ -16,24 +16,20 @@ DB_NAME=email_service
 
 ## Commands
 
-### Create a new migration
-```bash
-uv run yoyo new -m "description of migration"
-```
+Use the Makefile to run migrations with `.env` variables auto-exported:
 
-### Apply pending migrations
 ```bash
-uv run yoyo apply
-```
+# Create a new migration (prompts for name)
+make migrate-new
 
-### Rollback last migration
-```bash
-uv run yoyo rollback
-```
+# Apply pending migrations
+make migrate-apply
 
-### Show migration status
-```bash
-uv run yoyo list
+# Rollback last migration
+make migrate-rollback
+
+# Show migration status
+make migrate-list
 ```
 
 ## Migration File Structure
