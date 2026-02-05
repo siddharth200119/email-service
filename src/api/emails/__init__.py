@@ -1,51 +1,13 @@
 from fastapi import APIRouter
-from src.models import APIOutput
+from src.models import APIOutput, Email, EmailCreate, EmailUpdate, EmailStatus
 from src.utils.database import get_db_cursor
-from pydantic import BaseModel
-from typing import Optional, List
-from datetime import datetime
-from uuid import UUID
+from typing import Optional
 
 router = APIRouter(prefix="/emails", tags=["emails"])
 
 
-def serialize_row(row):
-    """Convert row to JSON-serializable dict"""
-    if row is None:
-        return None
-    result = {}
-    for key, value in dict(row).items():
-        if isinstance(value, datetime):
-            result[key] = value.isoformat()
-        elif isinstance(value, UUID):
-            result[key] = str(value)
-        else:
-            result[key] = value
-    return result
-
-
-class EmailCreate(BaseModel):
-    mailbox_id: str
-    direction: str = "OUTBOUND"
-    from_email: str
-    to_email: List[str]
-    cc_email: Optional[List[str]] = None
-    bcc_email: Optional[List[str]] = None
-    subject: Optional[str] = None
-    body_text: Optional[str] = None
-    body_html: Optional[str] = None
-    status: str = "ACKED"
-
-
-class EmailUpdate(BaseModel):
-    status: Optional[str] = None
-    subject: Optional[str] = None
-    body_text: Optional[str] = None
-    body_html: Optional[str] = None
-
-
 @router.get("")
-def get_all_emails(mailbox_id: Optional[str] = None, status: Optional[str] = None):
+def get_all_emails(mailbox_id: Optional[str] = None, status: Optional[EmailStatus] = None):
     """Get all emails with optional filters"""
     try:
         with get_db_cursor(commit=False) as cursor:
@@ -57,12 +19,14 @@ def get_all_emails(mailbox_id: Optional[str] = None, status: Optional[str] = Non
                 params.append(mailbox_id)
             if status:
                 query += " AND status = %s"
-                params.append(status)
+                params.append(status.value)
 
             query += " ORDER BY created_at DESC"
             cursor.execute(query, params)
             emails = cursor.fetchall()
-            return APIOutput.success(data=[serialize_row(row) for row in emails])
+            return APIOutput.success(
+                data=[Email(**row).model_dump(mode="json") for row in emails]
+            )
     except Exception as e:
         return APIOutput.failure(message=str(e))
 
@@ -76,7 +40,7 @@ def get_email(email_id: str):
             email = cursor.fetchone()
             if not email:
                 return APIOutput.failure(message="Email not found", status_code=404)
-            return APIOutput.success(data=serialize_row(email))
+            return APIOutput.success(data=Email(**email).model_dump(mode="json"))
     except Exception as e:
         return APIOutput.failure(message=str(e))
 
@@ -96,8 +60,8 @@ def create_email(email: EmailCreate):
                 RETURNING *
                 """,
                 (
-                    email.mailbox_id,
-                    email.direction,
+                    str(email.mailbox_id),
+                    email.direction.value,
                     email.from_email,
                     email.to_email,
                     email.cc_email,
@@ -105,12 +69,14 @@ def create_email(email: EmailCreate):
                     email.subject,
                     email.body_text,
                     email.body_html,
-                    email.status,
+                    email.status.value,
                 ),
             )
             new_email = cursor.fetchone()
             return APIOutput.success(
-                data=serialize_row(new_email), message="Email acknowledged", status_code=202
+                data=Email(**new_email).model_dump(mode="json"),
+                message="Email acknowledged",
+                status_code=202,
             )
     except Exception as e:
         return APIOutput.failure(message=str(e))
@@ -126,7 +92,7 @@ def update_email(email_id: str, email: EmailUpdate):
 
             if email.status is not None:
                 updates.append("status = %s")
-                values.append(email.status)
+                values.append(email.status.value)
             if email.subject is not None:
                 updates.append("subject = %s")
                 values.append(email.subject)
@@ -149,7 +115,10 @@ def update_email(email_id: str, email: EmailUpdate):
 
             if not updated_email:
                 return APIOutput.failure(message="Email not found", status_code=404)
-            return APIOutput.success(data=serialize_row(updated_email), message="Email updated")
+            return APIOutput.success(
+                data=Email(**updated_email).model_dump(mode="json"),
+                message="Email updated",
+            )
     except Exception as e:
         return APIOutput.failure(message=str(e))
 

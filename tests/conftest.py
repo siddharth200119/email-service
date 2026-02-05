@@ -1,3 +1,6 @@
+import dotenv
+dotenv.load_dotenv()
+
 import pytest
 from fastapi.testclient import TestClient
 from main import app

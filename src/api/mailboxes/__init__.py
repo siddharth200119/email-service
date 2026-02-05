@@ -1,37 +1,8 @@
 from fastapi import APIRouter
-from src.models import APIOutput
+from src.models import APIOutput, Mailbox, MailboxCreate, MailboxUpdate
 from src.utils.database import get_db_cursor
-from pydantic import BaseModel
-from typing import Optional
-from datetime import datetime
-from uuid import UUID
 
 router = APIRouter(prefix="/mailboxes", tags=["mailboxes"])
-
-
-def serialize_row(row):
-    """Convert row to JSON-serializable dict"""
-    if row is None:
-        return None
-    result = {}
-    for key, value in dict(row).items():
-        if isinstance(value, datetime):
-            result[key] = value.isoformat()
-        elif isinstance(value, UUID):
-            result[key] = str(value)
-        else:
-            result[key] = value
-    return result
-
-
-class MailboxCreate(BaseModel):
-    email_address: str
-    is_active: bool = True
-
-
-class MailboxUpdate(BaseModel):
-    email_address: Optional[str] = None
-    is_active: Optional[bool] = None
 
 
 @router.get("")
@@ -41,7 +12,9 @@ def get_all_mailboxes():
         with get_db_cursor(commit=False) as cursor:
             cursor.execute("SELECT * FROM mailboxes ORDER BY created_at DESC")
             mailboxes = cursor.fetchall()
-            return APIOutput.success(data=[serialize_row(row) for row in mailboxes])
+            return APIOutput.success(
+                data=[Mailbox(**row).model_dump(mode="json") for row in mailboxes]
+            )
     except Exception as e:
         return APIOutput.failure(message=str(e))
 
@@ -55,7 +28,7 @@ def get_mailbox(mailbox_id: str):
             mailbox = cursor.fetchone()
             if not mailbox:
                 return APIOutput.failure(message="Mailbox not found", status_code=404)
-            return APIOutput.success(data=serialize_row(mailbox))
+            return APIOutput.success(data=Mailbox(**mailbox).model_dump(mode="json"))
     except Exception as e:
         return APIOutput.failure(message=str(e))
 
@@ -75,7 +48,9 @@ def create_mailbox(mailbox: MailboxCreate):
             )
             new_mailbox = cursor.fetchone()
             return APIOutput.success(
-                data=serialize_row(new_mailbox), message="Mailbox created", status_code=201
+                data=Mailbox(**new_mailbox).model_dump(mode="json"),
+                message="Mailbox created",
+                status_code=201,
             )
     except Exception as e:
         return APIOutput.failure(message=str(e))
@@ -86,7 +61,6 @@ def update_mailbox(mailbox_id: str, mailbox: MailboxUpdate):
     """Update a mailbox"""
     try:
         with get_db_cursor() as cursor:
-            # Build dynamic update query
             updates = []
             values = []
             if mailbox.email_address is not None:
@@ -108,7 +82,10 @@ def update_mailbox(mailbox_id: str, mailbox: MailboxUpdate):
 
             if not updated_mailbox:
                 return APIOutput.failure(message="Mailbox not found", status_code=404)
-            return APIOutput.success(data=serialize_row(updated_mailbox), message="Mailbox updated")
+            return APIOutput.success(
+                data=Mailbox(**updated_mailbox).model_dump(mode="json"),
+                message="Mailbox updated",
+            )
     except Exception as e:
         return APIOutput.failure(message=str(e))
 
