@@ -7,6 +7,7 @@ from src.utils import logger
 from src.utils.database import get_db_cursor
 from src.utils.encryption import decrypt
 from src.utils.mail_sender import send_email
+from src.utils.webhooks import emit_event, EventTypes
 from src.models import Email, EmailStatus, MailboxCredentialWithSecrets
 
 
@@ -160,24 +161,69 @@ def process_email(email: Email) -> bool:
     Process a claimed email: get credentials and send.
     Returns True if successful, False otherwise.
     """
+    mailbox_id = str(email.mailbox_id)
+    email_id = str(email.id)
+    
     # Get credentials for the mailbox
-    credentials = get_mailbox_credentials(str(email.mailbox_id))
+    credentials = get_mailbox_credentials(mailbox_id)
     
     if not credentials:
         logger.warning(f"No active credentials found for mailbox {email.mailbox_id}")
-        update_email_status(str(email.id), EmailStatus.FAILED)
+        update_email_status(email_id, EmailStatus.FAILED)
+        
+        # Emit failure event
+        emit_event(
+            event_type=EventTypes.EMAIL_FAILED,
+            owner_type="mailbox",
+            owner_id=mailbox_id,
+            payload={
+                "email_id": email_id,
+                "from_email": email.from_email,
+                "to_email": email.to_email,
+                "subject": email.subject,
+                "error": "No active credentials found",
+            }
+        )
         return False
     
     # Send the email
     success, message = send_email(email, credentials)
     
     if success:
-        update_email_status(str(email.id), EmailStatus.SENT)
+        update_email_status(email_id, EmailStatus.SENT)
         logger.info(f"Email {email.id} sent successfully")
+        
+        # Emit sent event
+        emit_event(
+            event_type=EventTypes.EMAIL_SENT,
+            owner_type="mailbox",
+            owner_id=mailbox_id,
+            payload={
+                "email_id": email_id,
+                "from_email": email.from_email,
+                "to_email": email.to_email,
+                "subject": email.subject,
+                "direction": "OUTBOUND",
+            }
+        )
         return True
     else:
-        update_email_status(str(email.id), EmailStatus.FAILED)
+        update_email_status(email_id, EmailStatus.FAILED)
         logger.error(f"Email {email.id} failed: {message}")
+        
+        # Emit failure event
+        emit_event(
+            event_type=EventTypes.EMAIL_FAILED,
+            owner_type="mailbox",
+            owner_id=mailbox_id,
+            payload={
+                "email_id": email_id,
+                "from_email": email.from_email,
+                "to_email": email.to_email,
+                "subject": email.subject,
+                "error": message,
+            }
+        )
         return False
 
 
