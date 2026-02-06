@@ -41,7 +41,7 @@ class TestMailboxesCRUD:
         assert response.status_code == 200
         data = response.json()
         assert data["data"]["id"] == mailbox_id
-        assert data["data"]["email_address"] == "test-fixture@example.com"
+        assert data["data"]["email_address"] == created_mailbox["email_address"]
 
     def test_get_mailbox_not_found(self, client):
         """Test getting a non-existent mailbox"""

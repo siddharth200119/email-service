@@ -172,10 +172,14 @@ class TestEmailSenderWorker:
         result = process_email(email)
         assert result is False
 
-    def test_process_email_with_credentials(self, client, created_mailbox):
+    @patch("src.workers.email_sender.send_email")
+    def test_process_email_with_credentials(self, mock_send_email, client, created_mailbox):
         """Test processing an email with credentials succeeds"""
         from src.workers.email_sender import process_email, claim_pending_email
         from src.models import EmailStatus
+        
+        # Mock send_email to return success
+        mock_send_email.return_value = (True, "Email sent successfully")
         
         # Create credentials
         cred_response = client.post(
@@ -212,6 +216,9 @@ class TestEmailSenderWorker:
         result = process_email(email)
         assert result is True
         
+        # Verify send_email was called
+        mock_send_email.assert_called_once()
+        
         # Verify status is SENT
         get_response = client.get(f"/api/emails/{email_id}")
         assert get_response.json()["data"]["status"] == "SENT"
@@ -219,3 +226,4 @@ class TestEmailSenderWorker:
         # Cleanup
         client.delete(f"/api/credentials/{cred_id}")
         client.delete(f"/api/emails/{email_id}")
+
