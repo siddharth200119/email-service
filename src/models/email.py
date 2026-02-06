@@ -16,6 +16,7 @@ class EmailStatus(str, Enum):
     QUEUED = "QUEUED"
     SENT = "SENT"
     FAILED = "FAILED"
+    RECEIVED = "RECEIVED"  # For inbound emails from IMAP
 
 
 class EmailBase(BaseModel):
@@ -48,7 +49,9 @@ class Email(EmailBase):
     """Full email model with all fields"""
     id: UUID
     status: EmailStatus
+    imap_uid: Optional[int] = None
     created_at: datetime
     processing_started_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+

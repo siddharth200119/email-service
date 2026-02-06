@@ -47,6 +47,16 @@ def create_mailbox(mailbox: MailboxCreate):
                 (mailbox.email_address, mailbox.is_active),
             )
             new_mailbox = cursor.fetchone()
+            
+            # Create mailbox_state for IMAP receiver
+            cursor.execute(
+                """
+                INSERT INTO mailbox_state (mailbox_id)
+                VALUES (%s)
+                """,
+                (new_mailbox["id"],)
+            )
+            
             return APIOutput.success(
                 data=Mailbox(**new_mailbox).model_dump(mode="json"),
                 message="Mailbox created",
