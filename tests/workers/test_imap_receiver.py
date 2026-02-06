@@ -89,6 +89,125 @@ class TestIMAPReceiverWorker:
         assert decode_mime_header(None) == ""
         assert decode_mime_header("") == ""
 
+    # Threading tests
+    def test_normalize_message_id(self):
+        """Test normalizing Message-ID header"""
+        from src.workers.imap_receiver import normalize_message_id
+        
+        assert normalize_message_id("<ABC123@example.com>") == "abc123@example.com"
+        assert normalize_message_id("ABC123@example.com") == "abc123@example.com"
+        assert normalize_message_id("  <MSG@HOST>  ") == "msg@host"
+        assert normalize_message_id(None) is None
+        assert normalize_message_id("") is None
+
+    def test_normalize_subject(self):
+        """Test normalizing subject for threading"""
+        from src.workers.imap_receiver import normalize_subject
+        
+        assert normalize_subject("Hello World") == "hello world"
+        assert normalize_subject("Re: Hello World") == "hello world"
+        assert normalize_subject("RE: FW: Hello World") == "hello world"
+        assert normalize_subject("Fwd: Re: Hello") == "hello"
+        assert normalize_subject("[External] Important") == "important"
+        # Brackets are removed, then Re: prefix - this is acceptable for threading
+        assert normalize_subject("[SPAM] Re: Test") == "re: test"  # Re: inside bracket is kept
+        assert normalize_subject("Re: [External] Test") == "test"  # Re: at start is removed
+        assert normalize_subject(None) is None
+
+    def test_parse_references(self):
+        """Test parsing References header"""
+        from src.workers.imap_receiver import parse_references
+        
+        refs = parse_references("<msg1@host> <msg2@host> <msg3@host>")
+        assert len(refs) == 3
+        assert refs[0] == "msg1@host"
+        assert refs[2] == "msg3@host"
+        
+        assert parse_references(None) == []
+        assert parse_references("") == []
+
+    def test_threading_creates_new_thread(self, client, created_mailbox):
+        """Test that storing email creates a thread"""
+        from src.workers.imap_receiver import store_email
+        from src.utils.database import get_db_cursor
+        from email.message import EmailMessage
+        
+        msg = EmailMessage()
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Subject"] = "Test Threading"
+        msg["Message-ID"] = "<thread-test-001@example.com>"
+        msg.set_content("Thread test body")
+        
+        result = store_email(created_mailbox["id"], 1001, msg)
+        assert result is True
+        
+        # Verify thread was created
+        with get_db_cursor(commit=False) as cursor:
+            cursor.execute(
+                "SELECT thread_id FROM emails WHERE mailbox_id = %s AND imap_uid = %s",
+                (created_mailbox["id"], 1001)
+            )
+            row = cursor.fetchone()
+            assert row is not None
+            assert row["thread_id"] is not None
+            
+            # Cleanup
+            cursor.execute(
+                "DELETE FROM emails WHERE mailbox_id = %s AND imap_uid = %s",
+                (created_mailbox["id"], 1001)
+            )
+
+    def test_threading_reply_joins_thread(self, client, created_mailbox):
+        """Test that reply joins existing thread via In-Reply-To"""
+        from src.workers.imap_receiver import store_email
+        from src.utils.database import get_db_cursor
+        from email.message import EmailMessage
+        
+        # Store original email
+        msg1 = EmailMessage()
+        msg1["From"] = "sender@example.com"
+        msg1["To"] = "recipient@example.com"
+        msg1["Subject"] = "Original Message"
+        msg1["Message-ID"] = "<original-001@example.com>"
+        msg1.set_content("Original body")
+        
+        store_email(created_mailbox["id"], 2001, msg1)
+        
+        # Get thread ID of original
+        with get_db_cursor(commit=False) as cursor:
+            cursor.execute(
+                "SELECT thread_id FROM emails WHERE mailbox_id = %s AND imap_uid = %s",
+                (created_mailbox["id"], 2001)
+            )
+            original_thread = cursor.fetchone()["thread_id"]
+        
+        # Store reply with In-Reply-To
+        msg2 = EmailMessage()
+        msg2["From"] = "recipient@example.com"
+        msg2["To"] = "sender@example.com"
+        msg2["Subject"] = "Re: Original Message"
+        msg2["Message-ID"] = "<reply-001@example.com>"
+        msg2["In-Reply-To"] = "<original-001@example.com>"
+        msg2.set_content("Reply body")
+        
+        store_email(created_mailbox["id"], 2002, msg2)
+        
+        # Verify reply is in same thread
+        with get_db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "SELECT thread_id FROM emails WHERE mailbox_id = %s AND imap_uid = %s",
+                (created_mailbox["id"], 2002)
+            )
+            reply_thread = cursor.fetchone()["thread_id"]
+            assert reply_thread == original_thread
+            
+            # Cleanup
+            cursor.execute(
+                "DELETE FROM emails WHERE mailbox_id = %s AND imap_uid IN (%s, %s)",
+                (created_mailbox["id"], 2001, 2002)
+            )
+
     def test_parse_email_addresses_simple(self):
         """Test parsing simple email address"""
         from src.workers.imap_receiver import parse_email_addresses

@@ -250,8 +250,115 @@ def parse_email_addresses(header_value: Optional[str]) -> List[str]:
     return addresses
 
 
+def normalize_message_id(message_id: Optional[str]) -> Optional[str]:
+    """Normalize a Message-ID by removing angle brackets and lowercasing."""
+    if not message_id:
+        return None
+    # Remove angle brackets and whitespace
+    normalized = message_id.strip().strip("<>").lower()
+    return normalized if normalized else None
+
+
+def normalize_subject(subject: Optional[str]) -> Optional[str]:
+    """Normalize subject by removing Re:, Fwd:, [External], etc."""
+    if not subject:
+        return None
+    import re
+    # Remove common prefixes
+    normalized = subject.strip()
+    # Remove Re:, Fwd:, Fw:, etc. (case-insensitive, can be repeated)
+    normalized = re.sub(r'^(\s*(re|fwd?|aw|sv|回复|转发)\s*:\s*)+', '', normalized, flags=re.IGNORECASE)
+    # Remove [External], [SPAM], etc.
+    normalized = re.sub(r'\[.*?\]\s*', '', normalized)
+    # Normalize whitespace and lowercase
+    normalized = ' '.join(normalized.split()).lower()
+    return normalized if normalized else None
+
+
+def parse_references(references_header: Optional[str]) -> List[str]:
+    """Parse References header into a list of message IDs."""
+    if not references_header:
+        return []
+    # References are space-separated message IDs
+    refs = []
+    for ref in references_header.split():
+        normalized = normalize_message_id(ref)
+        if normalized:
+            refs.append(normalized)
+    return refs
+
+
+def resolve_thread(
+    cursor, mailbox_id: str, message_id: Optional[str],
+    in_reply_to: Optional[str], references: List[str], subject_normalized: Optional[str]
+) -> int:
+    """
+    Resolve the thread for an email.
+    
+    Resolution order:
+    1. Try In-Reply-To header
+    2. Try References header (newest to oldest)
+    3. Subject fallback (if headers missing)
+    4. Create new thread
+    
+    Returns the thread_id.
+    """
+    # 1. Try In-Reply-To
+    if in_reply_to:
+        cursor.execute(
+            "SELECT thread_id FROM emails WHERE message_id = %s AND thread_id IS NOT NULL LIMIT 1",
+            (in_reply_to,)
+        )
+        row = cursor.fetchone()
+        if row and row["thread_id"]:
+            logger.debug(f"Thread resolved via In-Reply-To: {row['thread_id']}")
+            return row["thread_id"]
+    
+    # 2. Try References (newest to oldest - reverse order)
+    if references:
+        # Reverse to check newest references first
+        for ref in reversed(references):
+            cursor.execute(
+                "SELECT thread_id FROM emails WHERE message_id = %s AND thread_id IS NOT NULL LIMIT 1",
+                (ref,)
+            )
+            row = cursor.fetchone()
+            if row and row["thread_id"]:
+                logger.debug(f"Thread resolved via References: {row['thread_id']}")
+                return row["thread_id"]
+    
+    # 3. Subject fallback (only if no header-based match and we have headers missing)
+    if not in_reply_to and not references and subject_normalized:
+        cursor.execute(
+            """
+            SELECT id FROM email_threads
+            WHERE mailbox_id = %s AND subject_normalized = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (mailbox_id, subject_normalized)
+        )
+        row = cursor.fetchone()
+        if row:
+            logger.debug(f"Thread resolved via subject fallback: {row['id']}")
+            return row["id"]
+    
+    # 4. Create new thread
+    cursor.execute(
+        """
+        INSERT INTO email_threads (mailbox_id, root_message_id, subject_normalized)
+        VALUES (%s, %s, %s)
+        RETURNING id
+        """,
+        (mailbox_id, message_id or f"uid-{mailbox_id}", subject_normalized)
+    )
+    new_thread = cursor.fetchone()
+    logger.debug(f"Created new thread: {new_thread['id']}")
+    return new_thread["id"]
+
+
 def store_email(mailbox_id: str, imap_uid: int, msg: email.message.Message) -> bool:
-    """Store an email in the database."""
+    """Store an email in the database with threading."""
     try:
         # Parse email headers
         from_email = parse_email_addresses(msg.get("From"))
@@ -260,6 +367,12 @@ def store_email(mailbox_id: str, imap_uid: int, msg: email.message.Message) -> b
         cc_email = parse_email_addresses(msg.get("Cc"))
         bcc_email = parse_email_addresses(msg.get("Bcc"))
         subject = decode_mime_header(msg.get("Subject"))
+        
+        # Threading headers
+        message_id = normalize_message_id(msg.get("Message-ID"))
+        in_reply_to = normalize_message_id(msg.get("In-Reply-To"))
+        references = parse_references(msg.get("References"))
+        subject_normalized = normalize_subject(subject)
 
         # Parse body
         body_text = None
@@ -296,15 +409,22 @@ def store_email(mailbox_id: str, imap_uid: int, msg: email.message.Message) -> b
                 logger.debug(f"Email UID {imap_uid} already exists (duplicate)")
                 return False
             
-            # Insert new email
+            # Resolve thread
+            thread_id = resolve_thread(
+                cursor, mailbox_id, message_id,
+                in_reply_to, references, subject_normalized
+            )
+            
+            # Insert new email with threading info
             cursor.execute(
                 """
                 INSERT INTO emails (
                     mailbox_id, direction, status, imap_uid,
                     from_email, to_email, cc_email, bcc_email,
-                    subject, body_text, body_html
+                    subject, body_text, body_html,
+                    message_id, in_reply_to, "references", thread_id
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id;
                 """,
                 (
@@ -319,11 +439,15 @@ def store_email(mailbox_id: str, imap_uid: int, msg: email.message.Message) -> b
                     subject,
                     body_text,
                     body_html,
+                    message_id,
+                    in_reply_to,
+                    references if references else None,
+                    thread_id,
                 )
             )
             result = cursor.fetchone()
             if result:
-                logger.debug(f"Stored email UID {imap_uid} as {result['id']}")
+                logger.debug(f"Stored email UID {imap_uid} as {result['id']} in thread {thread_id}")
                 return True
             return False
     except Exception as e:
