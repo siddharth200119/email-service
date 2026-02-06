@@ -17,6 +17,7 @@ from datetime import datetime
 from src.utils import logger
 from src.utils.database import get_db_cursor
 from src.utils.encryption import decrypt
+from src.utils.webhooks import emit_event, EventTypes
 from src.models import MailboxCredentialWithSecrets, EmailDirection
 
 
@@ -447,7 +448,25 @@ def store_email(mailbox_id: str, imap_uid: int, msg: email.message.Message) -> b
             )
             result = cursor.fetchone()
             if result:
-                logger.debug(f"Stored email UID {imap_uid} as {result['id']} in thread {thread_id}")
+                email_id = str(result['id'])
+                logger.debug(f"Stored email UID {imap_uid} as {email_id} in thread {thread_id}")
+                
+                # Emit webhook event (within same transaction)
+                emit_event(
+                    event_type=EventTypes.EMAIL_RECEIVED,
+                    owner_type="mailbox",
+                    owner_id=mailbox_id,
+                    payload={
+                        "email_id": email_id,
+                        "thread_id": thread_id,
+                        "from_email": from_email,
+                        "to_email": to_email,
+                        "subject": subject,
+                        "direction": "INBOUND",
+                    },
+                    cursor=cursor
+                )
+                
                 return True
             return False
     except Exception as e:
