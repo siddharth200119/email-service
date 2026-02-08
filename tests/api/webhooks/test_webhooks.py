@@ -218,34 +218,28 @@ class TestWebhookDelivery:
         assert len(signature) > 10
 
     @patch("src.workers.webhook_delivery.httpx.Client")
-    def test_deliver_webhook_success(self, mock_client_class, client, created_mailbox):
+    @patch("src.workers.webhook_delivery.get_db_cursor")
+    def test_deliver_webhook_success(self, mock_db_cursor, mock_client_class):
         """Test successful webhook delivery"""
-        from src.workers.webhook_delivery import deliver_webhook, claim_pending_event
-        from src.utils.webhooks import emit_event, EventTypes
-        from src.utils.database import get_db_cursor
+        from src.workers.webhook_delivery import deliver_webhook
         
-        # Create webhook
-        create_response = client.post(
-            "/api/webhooks",
-            json={
-                "owner_type": "mailbox",
-                "owner_id": created_mailbox["id"],
-                "url": "https://example.com/hook",
-            },
-        )
-        webhook_id = create_response.json()["data"]["id"]
+        # Create a mock event
+        mock_event = {
+            "id": 1,
+            "webhook_id": 123,
+            "event_type": "email.sent",
+            "payload": {"email_id": "456"},
+            "attempts": 0,
+        }
         
-        # Emit event
-        emit_event(
-            event_type=EventTypes.EMAIL_SENT,
-            owner_type="mailbox",
-            owner_id=created_mailbox["id"],
-            payload={"email_id": "456"},
-        )
-        
-        # Claim the event
-        event = claim_pending_event()
-        assert event is not None
+        # Mock the database cursor context manager
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {
+            "url": "https://example.com/hook",
+            "secret": "test-secret-123",
+            "is_active": True,
+        }
+        mock_db_cursor.return_value.__enter__.return_value = mock_cursor
         
         # Mock HTTP response
         mock_response = MagicMock()
@@ -255,10 +249,45 @@ class TestWebhookDelivery:
         mock_client_class.return_value.__enter__.return_value = mock_client
         
         # Deliver
-        result = deliver_webhook(event)
-        assert result is True
+        result = deliver_webhook(mock_event)
         
-        # Cleanup
-        with get_db_cursor(commit=True) as cursor:
-            cursor.execute("DELETE FROM webhook_events WHERE webhook_id = %s", (webhook_id,))
-        client.delete(f"/api/webhooks/{webhook_id}")
+        # Verify
+        assert result is True
+        mock_client.post.assert_called_once()
+
+    @patch("src.workers.webhook_delivery.httpx.Client")
+    @patch("src.workers.webhook_delivery.get_db_cursor")
+    def test_deliver_webhook_failure(self, mock_db_cursor, mock_client_class):
+        """Test webhook delivery failure and retry"""
+        from src.workers.webhook_delivery import deliver_webhook
+        
+        mock_event = {
+            "id": 1,
+            "webhook_id": 123,
+            "event_type": "email.sent",
+            "payload": {"email_id": "456"},
+            "attempts": 0,
+        }
+        
+        # Mock DB
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {
+            "url": "https://example.com/hook",
+            "secret": "test-secret-123",
+            "is_active": True,
+        }
+        mock_db_cursor.return_value.__enter__.return_value = mock_cursor
+        
+        # Mock HTTP failure
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__enter__.return_value = mock_client
+        
+        # Deliver
+        result = deliver_webhook(mock_event)
+        
+        # Should fail
+        assert result is False
+

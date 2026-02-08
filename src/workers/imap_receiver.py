@@ -299,8 +299,7 @@ def resolve_thread(
     Resolution order:
     1. Try In-Reply-To header
     2. Try References header (newest to oldest)
-    3. Subject fallback (if headers missing)
-    4. Create new thread
+    3. Create new thread
     
     Returns the thread_id.
     """
@@ -328,23 +327,7 @@ def resolve_thread(
                 logger.debug(f"Thread resolved via References: {row['thread_id']}")
                 return row["thread_id"]
     
-    # 3. Subject fallback (only if no header-based match and we have headers missing)
-    if not in_reply_to and not references and subject_normalized:
-        cursor.execute(
-            """
-            SELECT id FROM email_threads
-            WHERE mailbox_id = %s AND subject_normalized = %s
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            (mailbox_id, subject_normalized)
-        )
-        row = cursor.fetchone()
-        if row:
-            logger.debug(f"Thread resolved via subject fallback: {row['id']}")
-            return row["id"]
-    
-    # 4. Create new thread
+    # 3. Create new thread (no subject fallback)
     cursor.execute(
         """
         INSERT INTO email_threads (mailbox_id, root_message_id, subject_normalized)
