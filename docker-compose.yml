@@ -1,0 +1,59 @@
+# Development docker-compose - exposes all ports for debugging
+services:
+  # Database migrations (runs once before other services)
+  migrate:
+    build:
+      context: .
+      args:
+        SERVICE_TYPE: migrate
+    env_file: .env.docker
+    profiles:
+      - migrate
+
+  # FastAPI Application
+  api:
+    build:
+      context: .
+      args:
+        SERVICE_TYPE: api
+    ports:
+      - "3031:3031"
+    env_file: .env.docker
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+        required: false
+    restart: unless-stopped
+
+  # Email Sender Worker
+  email-sender:
+    build:
+      context: .
+      args:
+        SERVICE_TYPE: email-sender
+    env_file: .env.docker
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # IMAP Receiver Worker
+  imap-receiver:
+    build:
+      context: .
+      args:
+        SERVICE_TYPE: imap-receiver
+    env_file: .env.docker
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # Webhook Delivery Worker
+  webhook-delivery:
+    build:
+      context: .
+      args:
+        SERVICE_TYPE: webhook-delivery
+    env_file: .env.docker
+    depends_on:
+      - api
+    restart: unless-stopped
